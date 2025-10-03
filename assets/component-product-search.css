@@ -17,12 +17,12 @@
 
 .product-search input[type="search"]:focus {
   outline: none;
-  border-color: rgb(var(--color-link));
+  border: none;
 }
 
 .product-search input[type="search"]:focus-visible {
   outline: none;
-  border-color: rgb(var(--color-link));
+  border: none;
 }
 
 .product-search .search-icon {

@@ -3,10 +3,13 @@ class ProductSearch extends HTMLElement {
     super();
     this.searchTimeout = null;
     this.cartProductIds = new Set();
+    this.cache = new Map();
+    this.lastQuery = '';
+    this.abortController = null;
   }
 
   connectedCallback() {
-    setTimeout(() => this.init(), 100);
+    this.init();
   }
 
   init() {
@@ -28,6 +31,13 @@ class ProductSearch extends HTMLElement {
       return;
     }
     
+    if (query === this.lastQuery) return;
+    
+    if (this.cache.has(query)) {
+      this.displayResults(this.cache.get(query));
+      return;
+    }
+    
     this.showLoader();
     this.searchTimeout = setTimeout(() => {
       this.searchProducts(query);
@@ -41,20 +51,36 @@ class ProductSearch extends HTMLElement {
   }
 
   async searchProducts(query) {
+    this.lastQuery = query;
+    
+    if (this.abortController) {
+      this.abortController.abort();
+    }
+    this.abortController = new AbortController();
+    
     try {
-      await this.updateCartProductIds();
+      const [cartData, searchData] = await Promise.all([
+        this.updateCartProductIds(),
+        fetch(`/search/suggest.json?q=${encodeURIComponent(query)}&resources[type]=product&resources[limit]=10`, {
+          signal: this.abortController.signal
+        }).then(r => r.json())
+      ]);
       
-      const response = await fetch(`/search/suggest.json?q=${encodeURIComponent(query)}&resources[type]=product&resources[limit]=10`);
-      const data = await response.json();
-      
-      if (data.resources?.results?.products && data.resources.results.products.length > 0) {
-        const productsWithVariants = await this.fetchProductsWithVariants(data.resources.results.products);
+      if (searchData.resources?.results?.products && searchData.resources.results.products.length > 0) {
+        const productsWithVariants = await this.fetchProductsWithVariants(searchData.resources.results.products);
+        this.cache.set(query, productsWithVariants);
+        if (this.cache.size > 10) {
+          const firstKey = this.cache.keys().next().value;
+          this.cache.delete(firstKey);
+        }
         this.displayResults(productsWithVariants);
       } else {
         this.hideResults();
       }
     } catch (error) {
-      this.hideResults();
+      if (error.name !== 'AbortError') {
+        this.hideResults();
+      }
     }
   }
 
@@ -75,22 +101,19 @@ class ProductSearch extends HTMLElement {
   }
 
   async fetchProductsWithVariants(products) {
-    const productsWithVariants = [];
-    
-    for (const product of products) {
+    const promises = products.map(async product => {
       try {
         const productResponse = await fetch(`/products/${product.handle}.js`);
         const productData = await productResponse.json();
-        
         product.fullVariants = productData.variants;
-        productsWithVariants.push(product);
+        return product;
       } catch (error) {
         product.fullVariants = [];
-        productsWithVariants.push(product);
+        return product;
       }
-    }
+    });
     
-    return productsWithVariants;
+    return Promise.all(promises);
   }
 
   displayResults(products) {
@@ -101,28 +124,26 @@ class ProductSearch extends HTMLElement {
       return;
     }
 
-    this.resultsContainer.innerHTML = filteredProducts.map(product => {
-      return `
-        <div class="search-result-item" data-product-id="${product.id}">
-          <img src="${product.featured_image}" alt="${product.title}" loading="lazy">
-          <div class="product-info">
-            <h4>${product.title}</h4>
-            <span class="price">${this.formatPrice(product.price)}</span>
-          </div>
+    const fragment = document.createDocumentFragment();
+    
+    filteredProducts.forEach(product => {
+      const item = document.createElement('div');
+      item.className = 'search-result-item';
+      item.dataset.productId = product.id;
+      item.innerHTML = `
+        <img src="${product.featured_image}" alt="${product.title}" loading="lazy">
+        <div class="product-info">
+          <h4>${product.title}</h4>
+          <span class="price">${this.formatPrice(product.price)}</span>
         </div>
       `;
-    }).join('');
-
-    this.resultsContainer.querySelectorAll('.search-result-item').forEach(item => {
-      item.addEventListener('click', () => {
-        const productId = parseInt(item.dataset.productId);
-        const product = filteredProducts.find(p => p.id === productId);
-        if (product) {
-          this.selectProduct(product);
-        }
-      });
+      
+      item.addEventListener('click', () => this.selectProduct(product), { once: true });
+      fragment.appendChild(item);
     });
 
+    this.resultsContainer.innerHTML = '';
+    this.resultsContainer.appendChild(fragment);
     this.showResults();
   }
 
@@ -354,11 +375,10 @@ class ProductSearch extends HTMLElement {
 
 customElements.define('product-search', ProductSearch);
 
-document.addEventListener('DOMContentLoaded', () => {
-  const elements = document.querySelectorAll('product-search');
-  elements.forEach(element => {
-    if (!element.input) {
-      setTimeout(() => element.init?.(), 200);
-    }
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('product-search:not([data-initialized])').forEach(element => {
+      element.setAttribute('data-initialized', 'true');
+    });
   });
-});
+}
