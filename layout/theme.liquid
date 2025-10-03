@@ -354,6 +354,12 @@
         step_error: `{{- 'sections.quick_order_list.step_error' | t: step: '[step]' }}`,
       };
 
+      window.shop = {
+        currency: '{{ cart.currency.iso_code }}',
+        moneyFormat: '{{ shop.money_format }}',
+        moneyWithCurrencyFormat: '{{ shop.money_with_currency_format }}'
+      };
+
       window.accessibilityStrings = {
         imageAvailable: `{{ 'products.product.media.image_available' | t: index: '[index]' }}`,
         shareSuccess: `{{ 'general.share.success_message' | t }}`,

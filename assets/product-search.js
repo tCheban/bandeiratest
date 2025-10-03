@@ -6,10 +6,19 @@ class ProductSearch extends HTMLElement {
     this.cache = new Map();
     this.lastQuery = '';
     this.abortController = null;
+    this.cartUpdateListener = null;
   }
 
   connectedCallback() {
     this.init();
+    this.setupCartListener();
+    this.setupDrawerListener();
+  }
+
+  disconnectedCallback() {
+    if (this.cartUpdateListener) {
+      this.cartUpdateListener();
+    }
   }
 
   init() {
@@ -20,6 +29,48 @@ class ProductSearch extends HTMLElement {
     
     this.input.addEventListener('input', this.handleInput.bind(this));
     document.addEventListener('click', this.handleClickOutside.bind(this));
+  }
+
+  setupCartListener() {
+    if (typeof subscribe === 'function' && typeof PUB_SUB_EVENTS !== 'undefined') {
+      this.cartUpdateListener = subscribe(PUB_SUB_EVENTS.cartUpdate, (event) => {
+        setTimeout(() => {
+          this.cache.clear();
+          this.updateCartProductIds().then(() => {
+            if (this.resultsContainer.style.display === 'block' && this.lastQuery) {
+              this.displayCachedResults();
+            }
+          });
+        }, 100);
+      });
+    }
+  }
+
+  displayCachedResults() {
+    if (this.cache.has(this.lastQuery)) {
+      this.displayResults(this.cache.get(this.lastQuery));
+    }
+  }
+
+  setupDrawerListener() {
+    const cartDrawer = document.querySelector('cart-drawer');
+    if (cartDrawer) {
+      const observer = new MutationObserver(() => {
+        this.cache.clear();
+        this.updateCartProductIds().then(() => {
+          if (this.resultsContainer.style.display === 'block' && this.lastQuery) {
+            this.displayCachedResults();
+          }
+        });
+      });
+      
+      observer.observe(cartDrawer, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['class']
+      });
+    }
   }
 
   handleInput(e) {
@@ -86,17 +137,21 @@ class ProductSearch extends HTMLElement {
 
   async updateCartProductIds() {
     try {
-      const response = await fetch('/cart.js');
+      const response = await fetch('/cart.js?' + Date.now());
       const cart = await response.json();
       
-      this.cartProductIds = new Set();
+      const newCartProductIds = new Set();
       if (cart.items && cart.items.length > 0) {
         cart.items.forEach(item => {
-          this.cartProductIds.add(item.product_id);
+          newCartProductIds.add(item.product_id);
         });
       }
+      
+      this.cartProductIds = newCartProductIds;
+      return cart;
     } catch (error) {
       this.cartProductIds = new Set();
+      return null;
     }
   }
 
@@ -184,45 +239,72 @@ class ProductSearch extends HTMLElement {
       
       const variantId = availableVariant.id;
       
+      const config = fetchConfig('javascript');
+      config.headers['X-Requested-With'] = 'XMLHttpRequest';
+      delete config.headers['Content-Type'];
+      
       const formData = new FormData();
       formData.append('id', variantId.toString());
       formData.append('quantity', '1');
       
       const cart = document.querySelector('cart-notification') || document.querySelector('cart-drawer');
-      if (cart && cart.getSectionsToRender) {
-        formData.append(
-          'sections',
-          cart.getSectionsToRender().map((section) => section.id).join(',')
-        );
-        formData.append('sections_url', window.location.pathname);
+      if (cart) {
+        if (cart.getSectionsToRender) {
+          try {
+            const sections = cart.getSectionsToRender();
+            if (sections && sections.length > 0) {
+              formData.append(
+                'sections',
+                sections.map((section) => section.id)
+              );
+              formData.append('sections_url', window.location.pathname);
+            }
+          } catch (error) {
+            formData.append('sections', 'cart-drawer');
+            formData.append('sections_url', window.location.pathname);
+          }
+        }
+        if (cart.setActiveElement) {
+          cart.setActiveElement(this.input);
+        }
+      }
+      config.body = formData;
+
+      const response = await fetch(`${routes.cart_add_url}`, config);
+      const responseData = await response.json();
+
+      if (responseData.status) {
+        publish(PUB_SUB_EVENTS.cartError, {
+          source: 'product-search',
+          productVariantId: variantId,
+          errors: responseData.errors || responseData.description,
+          message: responseData.message,
+        });
+        this.showMessage(responseData.description || 'Failed to add product to cart', 'error');
+        return;
+      } else if (!cart) {
+        window.location = window.routes.cart_url;
+        return;
       }
 
-      const response = await fetch('/cart/add.js', {
-        method: 'POST',
-        headers: {
-          'X-Requested-With': 'XMLHttpRequest'
-        },
-        body: formData
-      });
-
-      if (response.ok) {
-        const responseData = await response.json();
-        
-        this.cartProductIds.add(product.id);
-        this.triggerCartUpdate(responseData, availableVariant.id);
-        this.updateCartCount();
-        
-      } else {
-        const errorText = await response.text();
-        
-        let errorData;
-        try {
-          errorData = JSON.parse(errorText);
-        } catch (e) {
-          errorData = { message: 'Failed to add product to cart' };
-        }
-        
-        this.showMessage(errorData.description || errorData.message || 'Failed to add product to cart', 'error');
+      this.cartProductIds.add(product.id);
+      
+      if (cart && cart.classList.contains('is-empty')) {
+        cart.classList.remove('is-empty');
+      }
+      
+      if (typeof publish === 'function' && typeof PUB_SUB_EVENTS !== 'undefined') {
+        publish(PUB_SUB_EVENTS.cartUpdate, {
+          source: 'product-search',
+          productVariantId: variantId,
+          cartData: responseData,
+        });
+      }
+      
+      if (cart && cart.renderContents) {
+        cart.renderContents(responseData);
+      } else if (cart && typeof cart.open === 'function') {
+        cart.open();
       }
       
     } catch (error) {
@@ -257,8 +339,14 @@ class ProductSearch extends HTMLElement {
         const responseData = await response.json();
         
         this.cartProductIds.add(product.id);
-        this.triggerCartUpdate(responseData, variantId);
-        this.updateCartCount();
+        
+        if (typeof publish === 'function' && typeof PUB_SUB_EVENTS !== 'undefined') {
+          publish(PUB_SUB_EVENTS.cartUpdate, {
+            source: 'product-search',
+            productVariantId: variantId,
+            cartData: responseData,
+          });
+        }
         
       } else {
         const errorText = await response.text();
@@ -276,44 +364,6 @@ class ProductSearch extends HTMLElement {
     } catch (error) {
       this.showMessage('Failed to add variant to cart', 'error');
     }
-  }
-
-  triggerCartUpdate(cartData, variantId) {
-    const cart = document.querySelector('cart-drawer') || document.querySelector('cart-notification');
-    
-    if (cart) {
-      try {
-        if (typeof publish === 'function' && typeof PUB_SUB_EVENTS !== 'undefined') {
-          publish(PUB_SUB_EVENTS.cartUpdate, {
-            source: 'product-search',
-            productVariantId: variantId,
-            cartData: cartData,
-          });
-        }
-        
-        if (cart.renderContents) {
-          cart.renderContents(cartData);
-        }
-        
-      } catch (error) {
-        this.showMessage(`Product added to cart!`, 'success');
-      }
-      
-    } else {
-      this.showMessage(`Product added to cart!`, 'success');
-    }
-  }
-
-  updateCartCount() {
-    fetch('/cart.js')
-      .then(response => response.json())
-      .then(cart => {
-        const cartCount = document.querySelector('.cart-count-bubble span, [data-cart-count]');
-        if (cartCount) {
-          cartCount.textContent = cart.item_count;
-        }
-      })
-      .catch(() => {});
   }
 
   showMessage(message, type = 'info') { 
@@ -347,10 +397,48 @@ class ProductSearch extends HTMLElement {
   }
 
   formatPrice(price) {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD'
-    }).format(price / 100);
+    if (!price && price !== 0) return '';
+    
+    let priceValue = price;
+    if (typeof price === 'string') {
+      priceValue = parseFloat(price);
+    }
+    
+    if (isNaN(priceValue)) return '';
+    
+    let currency = 'USD';
+    let moneyFormat = '${{amount}}';
+    
+    if (window.shop?.currency) {
+      currency = window.shop.currency;
+    }
+    
+    if (window.shop?.moneyFormat) {
+      moneyFormat = window.shop.moneyFormat;
+    }
+    
+    if (typeof Shopify !== 'undefined' && Shopify.formatMoney) {
+      return Shopify.formatMoney(priceValue, moneyFormat);
+    }
+    
+    let displayPrice = priceValue;
+    
+    if (priceValue > 999 && priceValue % 100 === 0) {
+      displayPrice = priceValue / 100;
+    }
+    
+    const locale = document.documentElement.lang || 'en-US';
+    
+    try {
+      return new Intl.NumberFormat(locale, {
+        style: 'currency',
+        currency: currency,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      }).format(displayPrice);
+    } catch (error) {
+      return `${currency} ${displayPrice.toFixed(2)}`;
+    }
   }
 
   showResults() {
