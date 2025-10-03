@@ -15,6 +15,7 @@
   {{ 'component-slider.css' | asset_url | stylesheet_tag }}
   {{ 'component-rating.css' | asset_url | stylesheet_tag }}
   {{ 'component-deferred-media.css' | asset_url | stylesheet_tag }}
+  {{ 'component-product-search.css' | asset_url | stylesheet_tag }}
 
   {% unless product.has_only_default_variant %}
     {{ 'component-product-variant-picker.css' | asset_url | stylesheet_tag }}
@@ -41,6 +42,7 @@
 
   <script src="{{ 'product-info.js' | asset_url }}" defer="defer"></script>
   <script src="{{ 'product-form.js' | asset_url }}" defer="defer"></script>
+  <script src="{{ 'product-search.js' | asset_url }}" defer="defer"></script>
   {%- if product.quantity_price_breaks_configured? -%}
     <script src="{{ 'show-more.js' | asset_url }}" defer="defer"></script>
     <script src="{{ 'price-per-item.js' | asset_url }}" defer="defer"></script>
@@ -477,6 +479,18 @@
 
               {%- when 'variant_picker' -%}
                 {% render 'product-variant-picker', product: product, block: block, product_form_id: product_form_id %}
+              {%- when 'product_search' -%}
+                <product-search class="product-search" {{ block.shopify_attributes }}>
+                  <input
+                    type="search"
+                    placeholder="{{ block.settings.placeholder_text | default: 'Search for products to add...' | escape }}"
+                    autocomplete="off"
+                  >
+                  <span class="search-icon">
+                    {{- 'icon-search.svg' | inline_asset_content -}}
+                  </span>
+                  <div class="search-results"></div>
+                </product-search>
               {%- when 'buy_buttons' -%}
                 {%- render 'buy-buttons',
                   block: block,
@@ -904,6 +918,19 @@
             }
           ],
           "default": "circle"
+        }
+      ]
+    },
+    {
+      "type": "product_search",
+      "name": "Product Search",
+      "limit": 1,
+      "settings": [
+        {
+          "type": "text",
+          "id": "placeholder_text",
+          "label": "Placeholder text",
+          "default": "Search for products to add..."
         }
       ]
     },
