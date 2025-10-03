@@ -131,7 +131,6 @@ class ProductSearch extends HTMLElement {
       item.className = 'search-result-item';
       item.dataset.productId = product.id;
       item.innerHTML = `
-        <img src="${product.featured_image}" alt="${product.title}" loading="lazy">
         <div class="product-info">
           <h4>${product.title}</h4>
           <span class="price">${this.formatPrice(product.price)}</span>
